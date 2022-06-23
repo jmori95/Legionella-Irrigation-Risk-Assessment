@@ -1,0 +1,205 @@
+---
+title: "Legionella Risk Assessment"
+author: "Jameson Mori"
+date: "1/30/2021"
+output: html_document
+---
+LOADING PACKAGES
+```{r}
+library(dplyr); library(lubridate); library(EnvStats); library(ggplot2); library(plotly); library(reshape2) 
+library(sensitivity); library(fitdistrplus); library(ggsn)
+```
+PROCESSING AERMOD OUTPUT TO GET WASTEWATER AIR CONCENTRATIONS
+```{r setup, include=FALSE}
+##### UPLOAD AIR CONCENTRATIONS #####
+# Subtract an hour from the datetime to preserve the date and convert to date 
+# Select only days without precipitation (no irrigation)
+# Select days between May 1 and September 30 for the years 2017-2019 (irrigation season)
+# Remove air concentration predictions from receptors on the irrigator itself
+
+# NORTH TO SOUTH SOURCE ORIENTATION FOR LOW PRESSURE SYSTEM #
+nsnelson = read.fwf("C:/Users/brennac2/Box/Archive/Irrigation Modeling/Nelson Median/NS_NELSON.PLT",
+	skip=8,width=c(14,14,14,14,14,9,9,9,8,10,10,10)) %>% 
+  dplyr::select(V1,V2,V3,V5,V11,x=V1,y=V2,c=V3,wdep=V5,date=V11,net=V12) %>% mutate(date2=date-1,
+  datetime=ymd_h(date2)) %>% filter(wdep==0) %>% filter(between(datetime,as.POSIXct("2019-05-01 1:00:00"),
+  as.POSIXct("2019-09-30 23:00:00"))|between(datetime,as.POSIXct("2017-05-01 1:00:00"),
+  as.POSIXct("2017-09-30 23:00:00"))|between(datetime,as.POSIXct("2018-05-01 1:00:00"),
+  as.POSIXct("2018-09-30 23:00:00"))) %>% filter(!between(x,0,15)&!between(y,0,800)) %>% 
+  dplyr::select(x,y,c,net) %>% mutate(i=rep("N"))
+
+# EAST TO WEST SOURCE ORIENTATION FOR LOW PRESSURE SYSTEM #
+ewnelson = read.fwf("C:/Users/brennac2/Box/Archive/Irrigation Modeling/Nelson Median/EW_NELSON.PLT",
+	skip=8,width=c(14,14,14,14,14,9,9,9,8,10,10,10)) %>% 
+  dplyr::select(V1,V2,V3,V5,V11,x=V1,y=V2,c=V3,wdep=V5,date=V11,net=V12) %>% mutate(date2=date-1,
+  datetime=ymd_h(date2)) %>% filter(wdep==0) %>%  
+  filter(between(datetime,as.POSIXct("2019-05-01 1:00:00"),as.POSIXct("2019-09-30 23:00:00"))|
+           between(datetime,as.POSIXct("2017-05-01 1:00:00"),as.POSIXct("2017-09-30 23:00:00"))|
+           between(datetime,as.POSIXct("2018-05-01 1:00:00"),as.POSIXct("2018-09-30 23:00:00"))) %>%
+  filter(!between(x,0,800)&!between(y,0,15)) %>% dplyr::select(x,y,c,net) %>% mutate(i=rep("N"))
+
+# NORTH TO SOUTH SOURCE ORIENTATION FOR HIGH PRESSURE SYSTEM #
+nssen = read.fwf("C:/Users/brennac2/Box/Archive/Irrigation Modeling/Senninger Median/NS_SENNINGER.PLT",
+	skip=8,width=c(14,14,14,14,14,9,9,9,8,10,10,10)) %>% 
+  dplyr::select(V1,V2,V3,V5,V11,x=V1,y=V2,c=V3,wdep=V5,date=V11,net=V12) %>% mutate(date2=date-1,
+  datetime=ymd_h(date2)) %>% filter(wdep==0) %>%  
+  filter(between(datetime,as.POSIXct("2019-05-01 1:00:00"),as.POSIXct("2019-09-30 23:00:00"))|
+           between(datetime,as.POSIXct("2017-05-01 1:00:00"),as.POSIXct("2017-09-30 23:00:00"))|
+           between(datetime,as.POSIXct("2018-05-01 1:00:00"),as.POSIXct("2018-09-30 23:00:00"))) %>%
+  filter(!between(x,0,15)&!between(y,0,800)) %>% dplyr::select(x,y,c,net) %>% mutate(i=rep("S"))
+
+# EAST TO WEST SOURCE ORIENTATION FOR HIGH PRESSURE SYSTEM #
+ewsen = read.fwf("C:/Users/brennac2/Box/Archive/Irrigation Modeling/Senninger Median/EW_SENNINGER.PLT",
+	skip=8,width=c(14,14,14,14,14,9,9,9,8,10,10,10)) %>% 
+  dplyr::select(V1,V2,V3,V5,V11,x=V1,y=V2,c=V3,wdep=V5,date=V11,net=V12) %>% mutate(date2=date-1,
+  datetime=ymd_h(date2)) %>% filter(wdep==0) %>%  
+  filter(between(datetime,as.POSIXct("2019-05-01 1:00:00"),as.POSIXct("2019-09-30 23:00:00"))|
+           between(datetime,as.POSIXct("2017-05-01 1:00:00"),as.POSIXct("2017-09-30 23:00:00"))|
+           between(datetime,as.POSIXct("2018-05-01 1:00:00"),as.POSIXct("2018-09-30 23:00:00"))) %>%
+  filter(!between(x,0,800)&!between(y,0,15)) %>% dplyr::select(x,y,c,net) %>% mutate(i=rep("S"))
+
+# COMBINE AIR CONCENTRATION DATA INTO ONE MATRIX #
+air = rbind(nsnelson,ewnelson,nssen,ewsen)
+#save(air,file="C:/Users/brennac2/Box/Archive/Irrigation Modeling/air_62322.RData")
+```
+CONTOUR MAPS OF THE AIR CONCENTRATIONS OF WASTEWATER
+NELSON WAS LOW PRESSURE
+SENNINGER WAS HIGH PRESSURE
+```{r}
+load("C:/Users/brennac2/Box/Archive/Irrigation Modeling/air_62322.RData") %>% data.frame()
+air2 = air %>% group_by(x,y,i) %>% summarize(C=median(c),.groups="keep") %>% ungroup() %>% mutate(i=as.factor(i))
+air2$i = recode(air2$i,"N"="Low Pressure","S"="High Pressure")
+air2$AB = air2$C>1
+air2$x2 = air2$x/1000  # convert from meters to kilometers
+air2$y2 = air2$y/1000
+
+# Get summary statistics for the aerosol concentration
+air_low = air %>% filter(i=="N")
+summary(air_low$c)
+air_high = air %>% filter(i=="S")
+summary(air_high$c)
+
+# Plot aerosols
+ww_plot = ggplot(air2,aes(x=x2,y=y2,z=C,group=i,color=AB,fill=AB))+geom_point()+
+  annotate("pointrange",x=0,y=0,ymin=-0.05,ymax=0.05,fill="black",size=1.4)+
+  facet_grid(i~.)+theme_bw()+labs(x="Distance (km)",y="Distance (km)")+
+  scale_x_continuous(limits=c(-8,8),breaks=c(seq(-8,8,2)))+scale_y_continuous(limits=c(-8,8),breaks=c(seq(-8,8,2)))+
+  theme(panel.grid=element_blank(),legend.position="none",axis.title=element_text(face="bold",size=11),
+  axis.title.x=element_text(vjust=-0.1),axis.title.y=element_text(vjust=2.25))+
+  scale_color_manual(values=c("Grey","#797979"))
+```
+PARAMETER GENERATION FOR RISK ASSESSMENT MODEL
+```{r}
+# EXPOSURE DURATION (non-work time spent outdoors by American adults) AND PLOT #
+E = c(rep(0.5,100*0.2),rep(1,100*0.17),rep(2,100*0.21),rep(3,100*0.12),rep(4,100*0.12),rep(5,100*0.07),rep(6,100*0.05),rep(7,100*0.025),
+			rep(8,100*0.025))
+summary(E)
+
+# BACTERIAL DECAY RATE #
+weather = read.fwf("C:/Users/brennac2/Box/Archive/Irrigation Modeling/Nelson Median/AERMET_IL.SFC",skip=1,
+              width = c(2,3,3,4,3,7,7,7,7,6,6,9,8,7,7,8,7,7,7,7,6,7,7,7,21)) 
+ws = weather %>% filter(between(V2,5,9)) #%>% select(V16,ws=V16)  # choose wind speed column for wind speeds May-September
+ws2 = ws[,16]
+ws2[ws2==999] = NA  # recode missing values
+summary(na.omit(ws2))
+
+micro = data.frame(simulateMvMatrix(1000,distributions = c(ld="beta",dist="unif",wind="emp"),  # Latin Hypercube sample for decay parameters
+	param.list = list(ld=list(shape1=7.9,shape2=36341.2),dist=list(min=1000,max=7000),wind=list(obs=wind)),sample.method = "LHS",seed = 643))
+
+dist = micro[,2]  # distance of individual from source
+L.D = function(dist){
+	micro = micro
+	LD = exp(-micro[,1]*(dist/micro[,3]))   # exp(-decay rate*(distance/wind speed))
+}
+ld = sapply(dist,L.D)  # distribution of decay factors for each distance  
+LD = apply(ld,2,mean)  # microbial decay adjustment factor for L. pneumophila
+
+# SAVE OUTPUT #
+save(E,LD,file="emp_param.RData")
+```
+RISK ASSESSMENT 
+```{r}
+load("air.RData"); load("emp_param.RData")
+
+# AIR CONCENTRATION RECEPTOR NETWORKS FOR LOW PRESSURE SYSTEM #
+a1n = air %>% filter(i=="N" & net=="  NET1    ") 
+a2n = air %>% filter(i=="N" & net=="  NET2    ") 
+a3n = air %>% filter(i=="N" & net=="  NET3    ") 
+a4n = air %>% filter(i=="N" & net=="  NET4    ") 
+a5n = air %>% filter(i=="N" & net=="  NET5    ") 
+a6n = air %>% filter(i=="N" & net=="  NET6    ") 
+a7n = air %>% filter(i=="N" & net=="  NET7    ")
+
+# AIR CONCENTRATION RECEPTOR NETWORKS FOR HIGH PRESSURE SYSTEM #
+a1s = air %>% filter(i=="S" & net=="  NET1    ")
+a2s = air %>% filter(i=="S" & net=="  NET2    ") 
+a3s = air %>% filter(i=="S" & net=="  NET3    ") 
+a4s = air %>% filter(i=="S" & net=="  NET4    ") 
+a5s = air %>% filter(i=="S" & net=="  NET5    ") 
+a6s = air %>% filter(i=="S" & net=="  NET6    ")
+a7s = air %>% filter(i=="S" & net=="  NET7    ") 
+
+# LATIN HYPERCUBE SAMPLING FOR AIR CONCENTRATIONS #
+A = data.frame(simulateMvMatrix(1000,distributions=c(a1n="emp",a2n="emp",a3n="emp",a4n="emp",a5n="emp",a6n="emp",a7n="emp",a1s="emp",
+																										 a2s="emp",a3s="emp",a4s="emp",a5s="emp",a6s="emp",a7s="emp"),
+																param.list = list(a1n=list(obs=a1n$c),a2n=list(obs=a2n$c),a3n=list(obs=a3n$c),a4n=list(obs=a4n$c),
+																									a5n=list(obs=a5n$c),a6n=list(obs=a6n$c),a7n=list(obs=a7n$c),a1s=list(obs=a1s$c),
+																									a2s=list(obs=a2s$c),a3s=list(obs=a3s$c),a4s=list(obs=a4s$c),a5s=list(obs=a5s$c),
+																									a6s=list(obs=a6s$c),a7s=list(obs=a7s$c)),sample.method = "LHS",seed=482))
+
+
+# LATIN HYPERCUBE SAMPLING FOR REMAINING RISK ASSESSMENT PARAMETERS #
+parm = data.frame(simulateMvMatrix(1000,distributions = c(E="emp",LD="emp",I="unif",P="unif",RR="unif",LP="unif"),
+																	 param.list = list(E=list(obs=E),LD=list(obs=LD),I=list(min=0.6,max=1.5),P=list(min=0.05,max=0.2),
+																	 									RR=list(min=0,max=0.5),LP=list(min=0,max=125000)),
+																	 sample.method = "LHS",seed=226))
+
+#### RISK ASSESSMENT FOR BOTH LOW AND HIGH PRESSURE SYSTEMS ####
+# Probability of infection per irrigation event --- 1-exp(-rlp*(air*I*LP*E*P*RR*LD)/9.97e8) --- 9.97e8 is for the unit conversions
+# E (1) --- LD (2) --- I (3) --- P (4) --- RR (5) --- LP (6)
+lp.d = function(A){
+	lpd = 1-exp(-0.06*((A*parm[,3]*round(parm[,6],0)*parm[,1]*parm[,4]*parm[,5]*parm[,2])/9.97e8))
+}
+lpd = apply(A,2,lp.d)  # distribution of the probabilities of infection for a single exposure 
+
+# SUMMARY STATISTICS #
+stats = apply(lpd,2,summary)
+```
+SOBOL SENSITIVITY ANALYSIS OF RISK ASSESSMENT MODEL
+```{r}
+load("air.RData"); load("emp_param.RData")
+
+# AIR CONCENTRATION DISTRIBUTION FITTING #
+Amax = air %>% filter(i=="S" & net=="  NET1    ") %>% na.omit()
+descdist(Amax$c)
+Amax1 = fitdist(Amax$c,"gamma","mme"); summary(Amax1); plot(Amax1)  # shape = 0.151 and rate = 0.004
+
+# PARAMETER VALUE MATRICES # 
+x1 = data.frame(simulateMvMatrix(1000,distributions=c(air="gamma",E="unif",LD="unif",I="unif",P="unif",RR="unif",LP="unif",rlp="unif"),
+																 param.list = list(air=list(shape=0.151,scale=0.004),E=list(min=0,max=24),LD=list(min=0,max=1),
+																 									I=list(min=0,max=10),P=list(min=0,max=1),RR=list(min=0,max=1),LP=list(min=0,max=125000*10),
+																 									rlp=list(min=0,max=1)),sample.method = "LHS",seed=471))
+x2 = data.frame(simulateMvMatrix(1000,distributions=c(air="gamma",E="unif",LD="unif",I="unif",P="unif",RR="unif",LP="unif",rlp="unif"),
+																 param.list = list(air=list(shape=0.151,scale=0.004),E=list(min=0,max=24),LD=list(min=0,max=1),
+																 									I=list(min=0,max=10),P=list(min=0,max=1),RR=list(min=0,max=1),LP=list(min=0,max=125000*10),
+																 									rlp=list(min=0,max=1)),sample.method = "LHS",seed=808))
+
+# SOBOL SENSITIVITY ANALYSIS #
+# air --- E --- LD --- I --- P --- RR --- LP --- rlp 
+lp.model = function(x){lp=1-exp(-x[,8]*(x[,1]*x[,2]*x[,3]*x[,4]*x[,5]*x[,6]*x[,7])/9.97e8)}
+LPsa = sobolSalt(model=lp.model,X1=x1,X2=x2,scheme="A",nboot=0,conf=0.95)  
+
+# PLOT THE SENSITIVITY ANALYSIS RESULTS #
+plot(LPsa,ylim=c(0,1),choice=1,col="red")  # plot the sensitivity analysis results (both first and total order indices)
+
+# MAKE A MATRIX OF FIRST AND TOTAL ORDER INDEX SCORES FOR EACH VARIABLE #
+# air (1) --- E (2) --- LD (3) --- I (4) --- P (5) --- RR (6) --- LP (7) --- rlp (8)
+lpsa1_v = data.frame(order(LPsa$S,decreasing=TRUE))  # variable order for first order indices
+lpsa1_s = LPsa$S %>% arrange(desc(original))         # score order for first order indices
+lpsat_v = data.frame(order(LPsa$T,decreasing=TRUE))  # variable order for total order indices
+lpsat_s = LPsa$T %>% arrange(desc(original))         # score order for total order indices
+lpsa = cbind(lpsa1_v,lpsa1_s,lpsat_v,lpsat_s)        # matrix with all scores 
+
+# SAVE SENSITIVITY ANALYSIS RESULTS #
+save(lpsa,file="sensitivity_results.RData")
+```
+
